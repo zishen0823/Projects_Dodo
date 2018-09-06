@@ -1,0 +1,219 @@
+---
+title: "project_dodo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+require(readr)
+require(ggplot2)
+require(gridExtra)
+```
+
+## I.Read the .csv files into R and determine an appropriate data structure
+```{r}
+trainnum=read.csv("trainProject.csv")
+train=trainnum[, -1]
+test=read.csv("testProject.csv")
+
+set.seed(0)
+hdt_ind = sample( nrow(trainnum), floor(0.2*nrow(trainnum)) ) # 20% of the data 
+
+trainFeat=data.matrix(train[-hdt_ind, ]) 
+trainLabel = trainnum$label[-hdt_ind]
+testFeat = data.matrix(train[hdt_ind, ])
+testLabel = trainnum$label[hdt_ind]
+```
+
+## II. Create a plotting function to view the images
+```{r}
+drawnum= function(df, rowname) { #n is row num
+  n=which(rownames(df)==rowname)
+  mm=matrix(as.numeric(df[n,]), nrow=28, ncol=28, byrow = T)
+  yx=data.frame(expand.grid(28:1, 1:28))
+  mmdf=cbind(yx, c(mm))
+  names(mmdf)=c("y", "x", "value")
+  ggplot(mmdf, aes(x=x, y=y)) + geom_point(aes(color=value),shape=15, size=5) + 
+    scale_color_gradient(low="white", high="black") + labs(title="Plot of the number")
+}
+```
+
+## III. Create a holdout set and a cross-validation set with folds
+```{r}
+# Split into holdout df and a df for the cross validation
+holdout_df = trainnum[hdt_ind,]
+crossvalid_df = trainnum[-hdt_ind,]
+
+nFold = 8
+
+crossvalid_df$fold = sample( rep( 1:nFold, each = ceiling(nrow(crossvalid_df)/nFold) ), nrow(crossvalid_df) )
+table(crossvalid_df$fold)
+
+models = 2:30 #  try anywhere from 2-NN to 30-NN
+```
+
+## IV. R code for kNN
+```{r}
+calcDist = function(testFeat, trainFeat){  #????
+  # Inputs: 
+  # trainFeat  is a m x n matrix of the features for the training data
+  # testFeat   is a l x n matrix of the features for the  test data
+  
+  m = nrow(trainFeat) # Number of observations in the training data
+  n = ncol(trainFeat) # Number of features
+  
+  # Calculate the squared distances using apply
+  sq_distances = apply(testFeat, 1, function(x){ 
+    test_j = matrix(x, nrow = m, ncol = n, byrow = TRUE)
+    apply( (trainFeat - test_j)^2, 1, sum) })
+  
+  # Return the transpose: we want "distances" to be a l by m matrix
+  return(t(sqrt(sq_distances)))
+}
+
+findNN = function(distances, k){
+  # Inputs: 
+  # distances  is a l x m matrix of distances between the 
+  #            test and training features (from calcDist)
+  # k          is the number of neighbors we want
+  
+  # For each row, pick out the indices of the k nearest neighbors
+  NNmat = apply(distances, 1, order)[1:k, ]
+  # Again, return the transpose: want this to be l by k
+  return(t(NNmat))
+}
+
+# Helper function for classification
+calc_mode = function(x){
+  mode_num = max(table( factor(x) )) 
+  mode_name = which( table(x) == mode_num )
+  
+  # Pick out the species for the mode; use "sample" to break ties  
+  return(names(mode_name)[ sample(x = length(mode_name), size = 1) ])
+}
+
+
+classifyNN = function( NNmat, trainLabels ){
+  # Inputs: 
+  # NNmat        is a l x k matrix containing the NN indices
+  # trainLabels  is a vector of the known labels for the training
+  #              set observations, now a FACTOR variable
+  
+  # Identify the labels of the nearest neighbors and
+  # put into a l x k matrix
+  classNN = matrix( trainLabels[ NNmat ], byrow = FALSE, ncol = ncol(NNmat))
+   print(dim(classNN))
+  # Classify based on the neighbors
+  classify = apply(classNN, 1, calc_mode)
+  return( classify )
+}
+
+# calculate distances for each fold (calc it out of the for loop to avoid over-calc)
+sampleDista=list()
+for (f in 1:nFold) {
+  sampleDista[[f]]= calcDist( testFeat=data.matrix( crossvalid_df[crossvalid_df$fold == f,2:785] ),
+                              trainFeat=data.matrix( crossvalid_df[crossvalid_df$fold != f,2:785] ))
+}
+
+# order for each fold (calc it out of the for loop to avoid over-calc)
+sampleorderr=list()
+for (f in 1:nFold) {
+  sampleorderr[[f]]=apply(sampleDista[[f]], 1, order)
+}
+
+# modified kNN function to avoid over-calc
+predict_kNN = function( trainFeat, trainLabel, testFeat, k ){
+  # Make sure trainFeat and testFeat are numeric matrices
+  if( is.matrix(trainFeat) == FALSE | is.matrix(testFeat) == FALSE ){
+    stop("trainFeat and testFeat must be matrices.")
+  }
+  sampleNN = t(sampleorderr[[f]][1:k, ])
+  sampleClass = classifyNN( NNmat = sampleNN, trainLabels = trainLabel )
+  return(sampleClass)
+}
+
+
+# Storage: empty matrix with one row for each obs, one column
+#          for each model (ranging over k = 1,...,20)
+prediction_matrix = matrix(NA, nrow = nrow(crossvalid_df), ncol = length(models))
+
+# Condut k-NN: now using all available features
+for( f in 1:nFold ){
+  for( k in 1:length(models) ){
+    prediction_matrix[crossvalid_df$fold == f,k] = predict_kNN( 
+      trainFeat = data.matrix( crossvalid_df[crossvalid_df$fold != f,2:785] ), 
+      trainLabel = crossvalid_df$label[crossvalid_df$fold != f],
+      testFeat = data.matrix( crossvalid_df[crossvalid_df$fold == f,2:785] ),
+      k = models[k] )
+  }
+  # Print progress
+  cat(f, " ")
+}
+
+# calculate misclassification rates
+calcError = function( prediction_matrix, trueLabels ){
+  return( apply( as.matrix(prediction_matrix), 2, function(x){ mean(x != as.character(trueLabels))} ) )
+}
+
+# calculate misclassification rates for each model
+misclassRate = calcError( prediction_matrix, crossvalid_df$label )
+
+# prediction plot
+ggplot( data.frame( k = models, Error = misclassRate  ),
+        aes( x = k, y = Error ) ) + geom_line() + geom_point()
+
+```
+
+## V. Model selection
+```{r}
+models[which.min(misclassRate)] # k=3
+```
+
+## VI. Summarize your procedure
+For cross validation, the sample set (with labels) is randomly separated as cross-validation set and hold-out set (20%).  The cross-validation set is the training set, which is used to train the classifier. The hold-out set is the test set, which is used to estimate the error rate of the trained classifier. A f-fold cross validation is performed on the trainig set, which is randomly separated into 8 equal folds here (each fold has 500 samples). In these 8 folds, one fold serves as for testing the model. and the rest 7 folds are used as training data. The cross validation process is repeated 8 times, and each fold is used as test set only once. This whole process is also repeated with each k neatest neighbour ranged from 2 to 30. A prediction matrix is made and its predicted labels are comapred with the true labels, and the misclassification rates are calculated for each k. The smallest misclassification rate is chosen and its corresponding k value will be the best model. This best model (k=3 here) is used to calculate the error rate with the hold-out set to test the accuracy of the model. It turns out the error rate is small (7.5%), so this model can be further applied to other unknown data sets for prediction.
+```{r}
+predict_kNN2 = function( trainFeat, trainLabel, testFeat, k ){
+  
+  # Make sure trainFeat and testFeat are numeric matrices
+  if( is.matrix(trainFeat) == FALSE | is.matrix(testFeat) == FALSE ){
+    stop("trainFeat and testFeat must be matrices.")
+  }
+  
+  # Step 1: calculate distances
+  sampleDist = calcDist( testFeat = testFeat, trainFeat = trainFeat )
+  # Step 2: find the k = 5 nearest neighbors
+  sampleNN = findNN(distances = sampleDist, k = k)
+  # Step 3: classify
+  sampleClass = classifyNN( NNmat = sampleNN, trainLabels = trainLabel )
+  
+  return(sampleClass)
+}
+
+# estimate the error rate using the holdout set
+# First, fit the best model to the holdout set
+holdout_predictions = predict_kNN2( 
+  trainFeat = data.matrix( crossvalid_df[,2:785] ),
+  trainLabel = crossvalid_df$label,
+  testFeat = data.matrix( holdout_df[,2:785] ), 
+  k = models[which.min(misclassRate)] )
+
+# Then, estimate the error
+calcError( holdout_predictions, holdout_df$label ) # 0.075
+```
+
+## VII. Out-of-sample prediction
+```{r}
+unknown_test_predicrions = predict_kNN2(
+  trainFeat = data.matrix( trainnum[,2:785] ),
+  trainLabel = trainnum$label,
+  testFeat = data.matrix( test[, 1:784]),
+  k = models[which.min(misclassRate)] )
+
+unknown_test_predicrions=as.data.frame(unknown_test_predicrions)
+write.csv(file="Out-of-sample prediction.csv", x=unknown_test_predicrions)
+
+# for self testing if the prediction make sense
+for (i in 1:20) {
+  print(drawnum(test, i))
+} 
+```
+

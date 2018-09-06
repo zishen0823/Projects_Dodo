@@ -1,0 +1,1000 @@
+---
+title: "154finalproject"
+output: html_document
+---
+
+```{r}
+download.file("https://raw.githubusercontent.com/ucb-stat154/stat154-fall-2017/master/problems/project/data/adult.data", destfile = "adult_data")
+download.file("https://raw.githubusercontent.com/ucb-stat154/stat154-fall-2017/master/problems/project/data/adult.test", destfile = "adult_test")
+
+adult.data=read.table("adult_data", sep = ",")
+colnames(adult.data)=c("age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country", "income")
+
+```
+
+## Fields (columns)
+
+- `age`: continuous.
+
+- `workclass`: Private, Self-emp-not-inc, Self-emp-inc, Federal-gov, Local-gov, State-gov, Without-pay, Never-worked.
+
+- `fnlwgt`: continuous.
+
+- `education`: Bachelors, Some-college, 11th, HS-grad, Prof-school, Assoc-acdm, Assoc-voc, 9th, 7th-8th, 12th, Masters, 1st-4th, 10th, Doctorate, 5th-6th, Preschool.
+
+- `education-num`: continuous.
+
+- `marital-status`: Married-civ-spouse, Divorced, Never-married, Separated, Widowed, Married-spouse-absent, Married-AF-spouse.
+
+- `occupation`: Tech-support, Craft-repair, Other-service, Sales, Exec-managerial, Prof-specialty, Handlers-cleaners, Machine-op-inspct, Adm-clerical, Farming-fishing, Transport-moving, Priv-house-serv, Protective-serv, Armed-Forces.
+
+- `relationship`: Wife, Own-child, Husband, Not-in-family, Other-relative, Unmarried.
+
+- `race`: White, Asian-Pac-Islander, Amer-Indian-Eskimo, Other, Black.
+
+- `sex`: Female, Male.
+
+- `capital-gain`: continuous.
+
+- `capital-loss`: continuous.
+
+- `hours-per-week`: continuous.
+
+- `native-country`: United-States, Cambodia, England, Puerto-Rico, Canada, Germany, Outlying-US(Guam-USVI-etc), India, Japan, Greece, South, China, Cuba, Iran, Honduras, Philippines, Italy, Poland, Jamaica, Vietnam, Mexico, Portugal, Ireland, France, Dominican-Republic, Laos, Ecuador, Taiwan, Haiti, Columbia, Hungary, Guatemala, Nicaragua, Scotland, Thailand, Yugoslavia, El-Salvador, Trinadad&Tobago, Peru, Hong, Holand-Netherlands.
+
+- `income`: >50K, <=50K.
+
+CLEANING DATA
+
+```{r}
+require(ggplot2)
+require(tree)
+require(caret)
+require(rpart.plot)
+require(ROCR)
+require(MASS)
+require(plyr)
+```
+
+```{r}
+# load training data and add colnames to the data set
+org_census_train <- read.csv("https://raw.githubusercontent.com/ucb-stat154/stat154-fall-2017/master/problems/project/data/adult.data", header = F, na.strings = "?")
+colnames(org_census_train) <- c("age", "workclass", "fnlwgt", "edu", "edu.num", "marital.status", "occupation", "relationship", "race", "sex", "cap.gain", "cap.loss", "hrs.per.week", "country", "income")
+
+# handling missing values and see the data structure
+for (j in 1:ncol(org_census_train)) {
+  checked_col <- as.vector(org_census_train[ ,j])
+  org_census_train <- org_census_train[checked_col != " ?", ]
+}
+census_train <- org_census_train
+summary(census_train)
+
+
+# load test data and add colnames to the data set
+org_census_test <- read.csv("https://raw.githubusercontent.com/ucb-stat154/stat154-fall-2017/master/problems/project/data/adult.test", header = F, na.strings = "?")
+colnames(org_census_test) <- c("age", "workclass", "fnlwgt", "edu", "edu.num", "marital.status", "occupation", "relationship", "race", "sex", "cap.gain", "cap.loss", "hrs.per.week", "country", "income")
+
+# handling missing values
+for (j in 1:ncol(org_census_test)) {
+  checked_col <- as.vector(org_census_test[ ,j])
+  org_census_test <- org_census_test[checked_col != " ?", ]
+}
+census_test <- org_census_test
+census_test$income <- as.factor(ifelse(census_test$income == census_test$income[1], " <=50K", " >50K"))
+```
+
+### Processing the Data
+#### "age"
+```{r}
+summary(census_train$age)
+boxplot (age ~ income, data = census_train, 
+     main = "Age Distribution for Different Income Levels",
+     xlab = "Income Levels", ylab = "Age", col = "salmon")
+# From the plot, we can see that a majority of the working people are aged from 25 to 65. The average age of earning <=50K is below 30-year-old while the average age of earining >50K is above 42-year-old. This leads to the assumption that experience definitely matters the income level.
+```
+  
+#### "workclass"
+```{r}
+table(census_train$workclass)
+
+df_wc <- data.frame(table(census_train$income, census_train$workclass))
+names(df_wc) <- c("income", "workclass", "count")
+
+df_wc <- ddply(df_wc, .(workclass), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_wc$label <- paste0(sprintf("%.0f", df_wc$percent), "%")
+df_wc <- df_wc[3:18, ]
+ggplot(df_wc, aes(x = workclass, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Workclass") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+# From the bar plot, we can see from the data that "Local-gov" and "State-gov" present similarly, so we can group them together as "OtherGov". We could also group "Never-worked" and "Without-pay" as a group since the porportion of them is really small.
+census_train$workclass <- gsub("Federal-gov", "FedGov", census_train$workclass)
+census_train$workclass <- gsub("Local-gov", "OtherGov", census_train$workclass)
+census_train$workclass <- gsub("State-gov", "OtherGov", census_train$workclass)
+census_train$workclass <- gsub("Never-worked", "NonWork", census_train$workclass)
+census_train$workclass <- gsub("Without-pay", "NonWork", census_train$workclass)
+census_train$workclass <- gsub("Private", "Private", census_train$workclass)
+census_train$workclass <- gsub("Self-emp-inc", "SelfEmpInc", census_train$workclass)
+census_train$workclass <- gsub("Self-emp-not-inc", "SelfEmpNotInc", census_train$workclass)
+table(census_train$workclass)
+
+df_wc1 <- data.frame(table(census_train$income, census_train$workclass))
+names(df_wc1) <- c("income", "workclass", "count")
+
+df_wc1 <- ddply(df_wc1, .(workclass), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_wc1$label <- paste0(sprintf("%.0f", df_wc1$percent), "%")
+ggplot(df_wc1, aes(x = workclass, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Workclass") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_test$workclass <- gsub("Federal-gov", "FedGov", census_test$workclass)
+census_test$workclass <- gsub("Local-gov", "OtherGov", census_test$workclass)
+census_test$workclass <- gsub("State-gov", "OtherGov", census_test$workclass)
+census_test$workclass <- gsub("Never-worked", "NonWork", census_test$workclass)
+census_test$workclass <- gsub("Without-pay", "NonWork", census_test$workclass)
+census_test$workclass <- gsub("Private", "Private", census_test$workclass)
+census_test$workclass <- gsub("Self-emp-inc", "SelfEmpInc", census_test$workclass)
+census_test$workclass <- gsub("Self-emp-not-inc", "SelfEmpNotInc", census_test$workclass)
+```
+  
+#### "fnlwgt"
+```{r}
+ggplot(census_train, aes(fnlwgt)) + geom_density(aes(fill = income))
+# We can see from the graph that most of the data from "fnlwgt" can seperate into "<=50K" and ">50K" groups equally. This means it does not matter for us to discard this variable since it won't effect out prediction. Besides, for the simplified purpose, we also should discard this variable.
+census_train$fnlwgt = NULL
+census_test$fnlwgt = NULL
+```
+  
+#### compare "edu" and "education.num" & "edu"
+```{r}
+table(census_train$edu)
+table(census_train$education.num)
+edu_tbl <- as.matrix(sort((table(census_train$edu)), decreasing = F))
+edu.num_tbl <- as.matrix(sort((table(census_train$edu.num)), decreasing = F))
+edu_mat <- cbind(edu_tbl, edu.num_tbl)
+edu_mat
+# We can see that both "edu" and "education.num" show us the same information, and it is enough for us to select one of them in the following steps. We are going to select "edu" variable.
+census_train$edu.num = NULL
+census_test$edu.num = NULL
+
+
+df_edu <- data.frame(table(census_train$income, census_train$edu))
+names(df_edu) <- c("income", "edu", "count")
+df_edu <- ddply(df_edu, .(edu), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_edu$label <- paste0(sprintf("%.0f", df_edu$percent), "%")
+
+ggplot(df_edu, aes(x = edu, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Education Degree") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+# It is easy to notice that the number of people of making greater than $50,000 a year increase as the years of education increases. For those who don???t have any forms of college education (less than or equal to 8 years of education), less than 10% have an annual income of greater than $50,000. While for those with doctorate degrees, nearly 3/4 makes greater than $50,000 a year. It is reasonable for us to group "10th", "11th", "12th", "1st-4th", "5th-6th", "7th-8th", "9th" and "Preschool" as "LowEdu" group, "Assoc-acdm" and "Assoc-voc" as "Assoc" group, "HS-grad" and "Some-college" as "H.S." group, "Bachelors" as "B." group, "Masters" as "M." group, and "Doctorate" and "Prof-school" as "HighEdu" group. 
+census_train$edu <- gsub("10th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("11th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("12th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("1st-4th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("5th-6th", "LoweEdu", census_train$edu)
+census_train$edu <- gsub("7th-8th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("9th", "LowEdu", census_train$edu)
+census_train$edu <- gsub("Assoc-acdm", "Assoc", census_train$edu)
+census_train$edu <- gsub("Assoc-voc", "Assoc", census_train$edu)
+census_train$edu <- gsub("Bachelors", "B.", census_train$edu)
+census_train$edu <- gsub("Doctorate", "HighEdu", census_train$edu)
+census_train$edu <- gsub("HS-grad", "H.S.", census_train$edu)
+census_train$edu <- gsub("Masters", "M.", census_train$edu)
+census_train$edu <- gsub("Preschool", "LowEdu", census_train$edu)
+census_train$edu <- gsub("Prof-school", "HighEdu", census_train$edu)
+census_train$edu <- gsub("Some-college", "H.S.", census_train$edu)
+table(census_train$edu)
+
+df_edu1 <- data.frame(table(census_train$income, census_train$edu))
+names(df_edu1) <- c("income", "edu", "count")
+df_edu1 <- ddply(df_edu1, .(edu), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_edu1$label <- paste0(sprintf("%.0f", df_edu1$percent), "%")
+
+ggplot(df_edu1, aes(x = edu, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Education Degree") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+census_test$edu <- gsub("10th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("11th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("12th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("1st-4th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("5th-6th", "LoweEdu", census_test$edu)
+census_test$edu <- gsub("7th-8th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("9th", "LowEdu", census_test$edu)
+census_test$edu <- gsub("Assoc-acdm", "Assoc", census_test$edu)
+census_test$edu <- gsub("Assoc-voc", "Assoc", census_test$edu)
+census_test$edu <- gsub("Bachelors", "B.", census_test$edu)
+census_test$edu <- gsub("Doctorate", "HighEdu", census_test$edu)
+census_test$edu <- gsub("HS-grad", "H.S.", census_test$edu)
+census_test$edu <- gsub("Masters", "M.", census_test$edu)
+census_test$edu <- gsub("Preschool", "LowEdu", census_test$edu)
+census_test$edu <- gsub("Prof-school", "HighEdu", census_test$edu)
+census_test$edu <- gsub("Some-college", "H.S.", census_test$edu)
+```
+  
+#### "marital.status"
+```{r}
+table(census_train$marital.status)
+df_mast <- data.frame(table(census_train$income, census_train$marital.status))
+names(df_mast) <- c("income", "marital.status", "count")
+df_mast <- ddply(df_mast, .(marital.status), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_mast$label <- paste0(sprintf("%.0f", df_mast$percent), "%")
+
+ggplot(df_mast, aes(x = marital.status, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Marital Status") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+# We can see "Divorced", "Married-spouse-absent", "Never-married", "Separated" and "Widowed" are very similar to each other in the distribution graph, and they are actually representing "Single" in the reality, so we classify them as a "Single" group. As for the "Married-AF-spouse" and "Married-civ-spouse", we are also see that they are very similar to each other, so we are going to group them together as "Married" group.
+census_train$marital.status <- gsub("Divorced", "Single", census_train$marital.status)
+census_train$marital.status <- gsub("Married-AF-spouse", "Married", census_train$marital.status)
+census_train$marital.status <- gsub("Married-civ-spouse", "Married", census_train$marital.status)
+census_train$marital.status <- gsub("Married-spouse-absent", "Single", census_train$marital.status)
+census_train$marital.status <- gsub("Never-married", "Single", census_train$marital.status)
+census_train$marital.status <- gsub("Separated", "Single", census_train$marital.status)
+census_train$marital.status <- gsub("Widowed", "Single", census_train$marital.status)
+table(census_train$marital.status)
+
+df_mast1 <- data.frame(table(census_train$income, census_train$marital.status))
+names(df_mast1) <- c("income", "marital.status", "count")
+df_mast1 <- ddply(df_mast1, .(marital.status), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_mast1$label <- paste0(sprintf("%.0f", df_mast1$percent), "%")
+
+ggplot(df_mast1, aes(x = marital.status, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Marital Status") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_test$marital.status <- gsub("Divorced", "Single", census_test$marital.status)
+census_test$marital.status <- gsub("Married-AF-spouse", "Married", census_test$marital.status)
+census_test$marital.status <- gsub("Married-civ-spouse", "Married", census_test$marital.status)
+census_test$marital.status <- gsub("Married-spouse-absent", "Single", census_test$marital.status)
+census_test$marital.status <- gsub("Never-married", "Single", census_test$marital.status)
+census_test$marital.status <- gsub("Separated", "Single", census_test$marital.status)
+census_test$marital.status <- gsub("Widowed", "Single", census_test$marital.status)
+```
+  
+#### "occupation"
+```{r}
+table(census_train$occupation)
+df_occup <- data.frame(table(census_train$income, census_train$occupation))
+names(df_occup) <- c("income", "occupation", "count")
+df_occup <- ddply(df_occup, .(occupation), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_occup$label <- paste0(sprintf("%.0f", df_occup$percent), "%")
+df_occup <- df_occup[3:30, ]
+
+ggplot(df_occup, aes(x = occupation, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Occupation") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$occupation <- gsub("Adm-clerical", "Adm", census_train$occupation)
+census_train$occupation <- gsub("Armed-Forces", "Military", census_train$occupation)
+census_train$occupation <- gsub("Craft-repair", "Technicians", census_train$occupation)
+census_train$occupation <- gsub("Exec-managerial", "Managers", census_train$occupation)
+census_train$occupation <- gsub("Farming-fishing", "Agricultural", census_train$occupation)
+census_train$occupation <- gsub("Handlers-cleaners", "Cleaners", census_train$occupation)
+census_train$occupation <- gsub("Machine-op-inspct", "Technicians", census_train$occupation)
+census_train$occupation <- gsub("Other-service", "Service", census_train$occupation)
+census_train$occupation <- gsub("Priv-house-serv", "Service", census_train$occupation)
+census_train$occupation <- gsub("Prof-specialty", "Professional", census_train$occupation)
+census_train$occupation <- gsub("Protective-serv", "Service", census_train$occupation)
+census_train$occupation <- gsub("Sales", "Sales", census_train$occupation)
+census_train$occupation <- gsub("Tech-support", "Technicians", census_train$occupation)
+census_train$occupation <- gsub("Transport-moving", "Laborers", census_train$occupation)
+table(census_train$occupation)
+df_occup1 <- data.frame(table(census_train$income, census_train$occupation))
+names(df_occup1) <- c("income", "occupation", "count")
+df_occup1 <- ddply(df_occup1, .(occupation), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_occup1$label <- paste0(sprintf("%.0f", df_occup1$percent), "%")
+
+ggplot(df_occup1, aes(x = occupation, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Occupation") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_test$occupation <- gsub("Adm-clerical", "Adm", census_test$occupation)
+census_test$occupation <- gsub("Armed-Forces", "Military", census_test$occupation)
+census_test$occupation <- gsub("Craft-repair", "Technicians", census_test$occupation)
+census_test$occupation <- gsub("Exec-managerial", "Managers", census_test$occupation)
+census_test$occupation <- gsub("Farming-fishing", "Agricultural", census_test$occupation)
+census_test$occupation <- gsub("Handlers-cleaners", "Cleaners", census_test$occupation)
+census_test$occupation <- gsub("Machine-op-inspct", "Technicians", census_test$occupation)
+census_test$occupation <- gsub("Other-service", "Service", census_test$occupation)
+census_test$occupation <- gsub("Priv-house-serv", "Service", census_test$occupation)
+census_test$occupation <- gsub("Prof-specialty", "Professional", census_test$occupation)
+census_test$occupation <- gsub("Protective-serv", "Service", census_test$occupation)
+census_test$occupation <- gsub("Sales", "Sales", census_test$occupation)
+census_test$occupation <- gsub("Tech-support", "Technicians", census_test$occupation)
+census_test$occupation <- gsub("Transport-moving", "Laborers", census_test$occupation)
+```
+  
+#### "relationship"
+```{r}
+table(census_train$relationship)
+df_rel <- data.frame(table(census_train$income, census_train$relationship))
+names(df_rel) <- c("income", "relationship", "count")
+df_rel <- ddply(df_rel, .(relationship), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_rel$label <- paste0(sprintf("%.0f", df_rel$percent), "%")
+
+ggplot(df_rel, aes(x = relationship, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Relationship") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$relationship = NULL
+census_test$relationship = NULL
+```
+  
+#### "race"
+```{r}
+table(census_train$race)
+df_race <- data.frame(table(census_train$income, census_train$race))
+names(df_race) <- c("income", "race", "count")
+df_race <- ddply(df_race, .(race), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_race$label <- paste0(sprintf("%.0f", df_race$percent), "%")
+
+ggplot(df_race, aes(x = race, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Race") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$race <- gsub("Amer-Indian-Eskimo", "Other", census_train$race)
+census_train$race <- gsub("Asian-Pac-Islander", "Asian", census_train$race)
+census_train$race <- gsub("Black", "Other", census_train$race)
+census_train$race <- gsub("Other", "Other", census_train$race)
+census_train$race <- gsub("White", "White", census_train$race)
+table(census_train$race)
+df_race1 <- data.frame(table(census_train$income, census_train$race))
+names(df_race1) <- c("income", "race", "count")
+df_race1 <- ddply(df_race1, .(race), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_race1$label <- paste0(sprintf("%.0f", df_race1$percent), "%")
+
+ggplot(df_race1, aes(x = race, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Race") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$race <- gsub("Amer-Indian-Eskimo", "AmeIndi", census_train$race)
+census_train$race <- gsub("Asian-Pac-Islander", "Asian", census_train$race)
+census_train$race <- gsub("Black", "Black", census_train$race)
+census_train$race <- gsub("Other", "Other", census_train$race)
+census_train$race <- gsub("White", "White", census_train$race)
+table(census_train$race)
+
+census_test$race <- gsub("Amer-Indian-Eskimo", "Other", census_test$race)
+census_test$race <- gsub("Asian-Pac-Islander", "Asian", census_test$race)
+census_test$race <- gsub("Black", "Other", census_test$race)
+census_test$race <- gsub("Other", "Other", census_test$race)
+census_test$race <- gsub("White", "White", census_test$race)
+```
+  
+#### "sex"
+```{r}
+table(census_train$sex)
+df_sex <- data.frame(table(census_train$income, census_train$sex))
+names(df_sex) <- c("income", "sex", "count")
+df_sex <- ddply(df_sex, .(sex), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_sex$label <- paste0(sprintf("%.0f", df_sex$percent), "%")
+
+ggplot(df_sex, aes(x = sex, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Sex") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+```
+  
+#### "cap.gain" and "cap.loss"
+```{r}
+ggplot(census_train, aes(x = as.numeric(cap.gain), group = income, fill = income)) +
+  geom_histogram(bins = 10, color = "black") + 
+  ggtitle("Histrogram of Captical Gain")
+ggplot(census_train, aes(x = as.numeric(cap.loss), group = income, fill = income)) +
+  geom_histogram(bins = 10, color = "black") + 
+  ggtitle("Histrogram of Captical Loss")
+
+census_train$cap.gain <- ordered(cut(census_train$cap.gain, c(-Inf, 0, median(census_train$cap.gain [census_train$cap.gain > 0]), Inf)), labels = c("None", "Low", "High"))
+table(census_train$cap.gain)
+df_gain <- data.frame(table(census_train$income, census_train$cap.gain))
+names(df_gain) <- c("income", "cap.gain", "count")
+df_gain <- ddply(df_gain, .(cap.gain), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_gain$label <- paste0(sprintf("%.0f", df_gain$percent), "%")
+
+ggplot(df_gain, aes(x = cap.gain, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Cap.gain") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$cap.loss <- ordered(cut(census_train$cap.loss, c(-Inf, 0, median(census_train$cap.loss [census_train$cap.loss > 0]), Inf)), labels = c("None", "Low", "High"))
+table(census_train$cap.loss)
+df_loss <- data.frame(table(census_train$income, census_train$cap.loss))
+names(df_loss) <- c("income", "cap.loss", "count")
+df_loss <- ddply(df_loss, .(cap.loss), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_loss$label <- paste0(sprintf("%.0f", df_loss$percent), "%")
+
+ggplot(df_loss, aes(x = cap.loss, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Cap.loss") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_test$cap.gain <- ordered(cut(census_test$cap.gain, c(-Inf, 0, median(census_test$cap.gain [census_test$cap.gain > 0]), Inf)), labels = c("None", "Low", "High"))
+census_test$cap.loss <- ordered(cut(census_test$cap.loss, c(-Inf, 0, median(census_test$cap.loss [census_test$cap.loss > 0]), Inf)), labels = c("None", "Low", "High"))
+```
+  
+#### "hrs.per.week"
+```{r}
+summary(census_train$hrs.per.week)
+boxplot(hrs.per.week ~ income, data = census_train, 
+     main = "WorkHoursPerWeek Distribution for Different Income Levels",
+     xlab = "Income Levels", ylab = "hrs.per.week", col = "salmon")
+```
+  
+#### "country"
+```{r}
+# sort countries based on GNI per capita (dollar value of a country's final income in a year, divided by its population, reflects the average income of a country's citizens) in 2016 for the current 2018 fiscal year, calculated using the World Bank Atlas method.
+# low-income(L) economies: $1,005 or less ; lower middle-income(LM) economies: $1,006 to $3,955; upper middle-income(UM) economies: $3,956 to $12,235; high-income(H) economies: $12,236 or more.
+# United States has a large number, so do not sort
+table(census_train$country)
+df_cou <- data.frame(table(census_train$income, census_train$country))
+names(df_cou) <- c("income", "country", "count")
+df_cou <- ddply(df_cou, .(country), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_cou$label <- paste0(sprintf("%.0f", df_cou$percent), "%")
+
+ggplot(df_cou, aes(x = country, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Country") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_train$country <- gsub("Cambodia", "LM", census_train$country)
+census_train$country <- gsub("Canada", "H", census_train$country)
+census_train$country <- gsub("China", "H", census_train$country)
+census_train$country <- gsub("Columbia", "UM", census_train$country)
+census_train$country <- gsub("Cuba", "UM", census_train$country)
+census_train$country <- gsub("Dominican-Republic", "UM", census_train$country)
+census_train$country <- gsub("Ecuador", "UM", census_train$country)
+census_train$country <- gsub("El-Salvador", "LM", census_train$country)
+census_train$country <- gsub("England", "H", census_train$country)
+census_train$country <- gsub("France", "H", census_train$country)
+census_train$country <- gsub("Germany", "H", census_train$country)
+census_train$country <- gsub("Greece", "H", census_train$country)
+census_train$country <- gsub("Guatemala", "LM", census_train$country)
+census_train$country <- gsub("Haiti", "L", census_train$country)
+census_train$country <- gsub("Holand-Netherlands", "H", census_train$country)
+census_train$country <- gsub("Honduras", "LM", census_train$country)
+census_train$country <- gsub("Hong", "H", census_train$country)
+census_train$country <- gsub("Hungary", "H", census_train$country)
+census_train$country <- gsub("India", "LM", census_train$country)
+census_train$country <- gsub("Iran", "UM", census_train$country)
+census_train$country <- gsub("Ireland", "H", census_train$country)
+census_train$country <- gsub("Italy", "H", census_train$country)
+census_train$country <- gsub("Jamaica", "UM", census_train$country)
+census_train$country <- gsub("Japan", "H", census_train$country)
+census_train$country <- gsub("Laos", "LM", census_train$country)
+census_train$country <- gsub("Mexico", "UM", census_train$country)
+census_train$country <- gsub("Nicaragua", "LM", census_train$country)
+census_train$country <- gsub("Outlying-US\\(Guam-USVI-etc\\)", "H", census_train$country)
+census_train$country <- gsub("Peru", "UM", census_train$country)
+census_train$country <- gsub("Philippines", "LM", census_train$country)
+census_train$country <- gsub("Poland", "H", census_train$country)
+census_train$country <- gsub("Portugal", "H", census_train$country)
+census_train$country <- gsub("Puerto-Rico", "H", census_train$country)
+census_train$country <- gsub("Scotland", "H", census_train$country)
+census_train$country <- gsub("South", "UM", census_train$country)
+census_train$country <- gsub("Taiwan", "H", census_train$country)
+census_train$country <- gsub("Thailand", "UM", census_train$country)
+census_train$country <- gsub("Trinadad&Tobago", "H", census_train$country)
+census_train$country <- gsub("United-States", "United-States", census_train$country)
+census_train$country <- gsub("Vietnam", "LM", census_train$country)
+census_train$country <- gsub("Yugoslavia", "UM", census_train$country)
+census_train$country <- gsub("United-States", "US", census_train$country)
+table(census_train$country)
+df_cou1 <- data.frame(table(census_train$income, census_train$country))
+names(df_cou1) <- c("income", "country", "count")
+df_cou1 <- ddply(df_cou1, .(country), transform, percent = count / sum(count) * 100, pos = (sum(count) - (cumsum(count) - 0.5 * count)))
+df_cou1$label <- paste0(sprintf("%.0f", df_cou1$percent), "%")
+
+ggplot(df_cou1, aes(x = country, y = count, fill = income)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = pos, label = label), size = 2) +
+  ggtitle("Income Level with Different Cleaned Country") +
+  theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.2))
+
+census_test$country <- gsub("Cambodia", "LM", census_test$country)
+census_test$country <- gsub("Canada", "H", census_test$country)
+census_test$country <- gsub("China", "H", census_test$country)
+census_test$country <- gsub("Columbia", "UM", census_test$country)
+census_test$country <- gsub("Cuba", "UM", census_test$country)
+census_test$country <- gsub("Dominican-Republic", "UM", census_test$country)
+census_test$country <- gsub("Ecuador", "UM", census_test$country)
+census_test$country <- gsub("El-Salvador", "LM", census_test$country)
+census_test$country <- gsub("England", "H", census_test$country)
+census_test$country <- gsub("France", "H", census_test$country)
+census_test$country <- gsub("Germany", "H", census_test$country)
+census_test$country <- gsub("Greece", "H", census_test$country)
+census_test$country <- gsub("Guatemala", "LM", census_test$country)
+census_test$country <- gsub("Haiti", "L", census_test$country)
+census_test$country <- gsub("Holand-Netherlands", "H", census_test$country)
+census_test$country <- gsub("Honduras", "LM", census_test$country)
+census_test$country <- gsub("Hong", "H", census_test$country)
+census_test$country <- gsub("Hungary", "H", census_test$country)
+census_test$country <- gsub("India", "LM", census_test$country)
+census_test$country <- gsub("Iran", "UM", census_test$country)
+census_test$country <- gsub("Ireland", "H", census_test$country)
+census_test$country <- gsub("Italy", "H", census_test$country)
+census_test$country <- gsub("Jamaica", "UM", census_test$country)
+census_test$country <- gsub("Japan", "H", census_test$country)
+census_test$country <- gsub("Laos", "LM", census_test$country)
+census_test$country <- gsub("Mexico", "UM", census_test$country)
+census_test$country <- gsub("Nicaragua", "LM", census_test$country)
+census_test$country <- gsub("Outlying-US\\(Guam-USVI-etc\\)", "H", census_test$country)
+census_test$country <- gsub("Peru", "UM", census_test$country)
+census_test$country <- gsub("Philippines", "LM", census_test$country)
+census_test$country <- gsub("Poland", "H", census_test$country)
+census_test$country <- gsub("Portugal", "H", census_test$country)
+census_test$country <- gsub("Puerto-Rico", "H", census_test$country)
+census_test$country <- gsub("Scotland", "H", census_test$country)
+census_test$country <- gsub("South", "UM", census_test$country)
+census_test$country <- gsub("Taiwan", "H", census_test$country)
+census_test$country <- gsub("Thailand", "UM", census_test$country)
+census_test$country <- gsub("Trinadad&Tobago", "H", census_test$country)
+census_test$country <- gsub("United-States", "United-States", census_test$country)
+census_test$country <- gsub("Vietnam", "LM", census_test$country)
+census_test$country <- gsub("Yugoslavia", "UM", census_test$country)
+census_test$country <- gsub("United-States", "US", census_test$country)
+```
+  
+#### "income"
+```{r}
+# greater and equal to 50K is group1, smaller than 50K is group0
+census_train$income <- as.factor(ifelse(census_train$income == census_train$income[1], 0, 1))
+census_test$income <- as.factor(ifelse(census_test$income == census_test$income[1], 0, 1))
+```
+
+```{r}
+# combine train and test sets to form a whole dataset
+census <- rbind(census_train, census_test)
+
+census$workclass <- as.factor(census$workclass)
+census$edu <- as.factor(census$edu)
+census$marital.status <- as.factor(census$marital.status)
+census$occupation <- as.factor(census$occupation)
+census$race <- as.factor(census$race)
+census$sex <- as.factor(census$sex)
+census$cap.gain <- as.factor(census$cap.gain)
+census$cap.loss <- as.factor(census$cap.loss)
+census$country <- as.factor(census$country)
+```
+
+
+
+#### Classification tree: using Gini index & entropy as criterion to train the decision tree classifier
+```{r}
+# Entropy
+require(ggplot2)
+require(tree)
+require(caret)
+require(rpart.plot)
+require(ROCR)
+require(MASS)
+dim(census_train)
+# using information gain as criterion to train the decision tree classifier
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+set.seed(123)
+census_train_treefit <- train(income ~ ., data = census_train, method = "rpart", parms = list(split = "information"), trControl = trctrl, tuneLength = 10)
+census_train_treefit
+
+result_tbl <- census_train_treefit$results
+ggplot(result_tbl, aes(x = cp, y = Accuracy)) + geom_point() + geom_line() + ggtitle("Cp values vs. Accuracy")
+# the tuning parameter gives us the highest accuracy will be the opitimal tuning parameter, we can look for the highest accuracy and the corresponding cp value is the opitimal complexity parameter
+result_tbl[which.max(result_tbl$Accuracy), ]$cp
+result_tbl[which.max(result_tbl$Accuracy), ]$Accuracy
+# opitimal complexity parameter is cp = 0.001331913
+# the training accuracy rate is 0.8392129
+
+# plot the classification tree with the opitimal complexity parameter (cp = 0.001331913)
+prp(census_train_treefit$finalModel, box.palette = "Blues", tweak = 0.8)
+# predict test set
+census_test_pred <- predict(census_train_treefit, newdata = census_test)
+confusionMatrix(census_test_pred, census_test$income)
+list("optimial complexity parameter" = result_tbl[which.max(result_tbl$Accuracy), ]$cp, 
+     "training accuracy rate" = result_tbl[which.max(result_tbl$Accuracy), ]$Accuracy, 
+     "predicting accuracy rate" = 0.8434, 
+     "sensitivity" = 0.9345, 
+     "specificity" = 0.5638)
+
+#Gini
+set.seed(123)
+census_train_treefit_gini <- train(income ~ ., data = census_train, method = "rpart", parms = list(split = "gini"), trControl = trctrl, tuneLength = 10)
+census_train_treefit_gini
+
+result_tbl_gini <- census_train_treefit_gini$results
+ggplot(result_tbl_gini, aes(x = cp, y = Accuracy)) + 
+  geom_point(color = "salmon") + 
+  geom_line(color = "blue") + 
+  ggtitle("Cp values vs. Accuracy using Gini as criterion")
+result_tbl_gini[which.max(result_tbl_gini$Accuracy), ]$cp
+result_tbl_gini[which.max(result_tbl_gini$Accuracy), ]$Accuracy
+# opitimal complexity parameter is cp = 0.001198721
+# the training accuracy rate is 0.8419646
+
+# plot the classification tree with the opitimal complexity parameter (cp = 0.001198721)
+prp(census_train_treefit_gini$finalModel, box.palette = "Reds", tweak = 0.8)
+# predict test set
+census_test_gini_pred <- predict(census_train_treefit_gini, newdata = census_test)
+confusionMatrix(census_test_gini_pred, census_test$income)
+list("optimial complexity parameter" = result_tbl_gini[which.max(result_tbl_gini$Accuracy), ]$cp, 
+     "training accuracy rate" = result_tbl_gini[which.max(result_tbl_gini$Accuracy), ]$Accuracy, 
+     "predicting accuracy rate" = 0.8432, 
+     "sensitivity" = 0.9293, 
+     "specificity" = 0.5789)
+```
+
+
+# Classification tree: use tree()
+```{r}
+require(tree)
+tree1 = tree(income ~., data = census_train)
+summary(tree1)
+plot(tree1)
+text(tree1, pretty =0)
+
+# prune the parameter 
+cv1 = cv.tree(tree1 ,FUN=prune.misclass )
+cv1 # find the smallest dev (CV error rate), and it corresponds to size(terminal nodes) of 5 or 3
+
+plot(cv1$size ,cv1$dev ,type="b")
+plot(cv1$k ,cv1$dev ,type="b")
+
+# fit the model with best pruning parameter
+prune1=prune.misclass(tree1, best=5) # best=5 or 3 have the same error rate, gives the same result
+plot(prune1)
+text(prune1, pretty=0)
+
+# get prediction
+tree1.pred=predict(prune1, census_test, type="class")
+confusionMatrix(tree1.pred, census_test[,12])
+
+# accuracy
+sum(diag(table(tree1.pred, census_test[,12])))/length(tree1.pred) 
+
+```
+
+
+# Classification tree: rpqrt()
+```{r}
+require(rpart)
+require(rpart.plot)
+tree2 = rpart(income~., data = census_train, method = "class") #"class" for a classification tree 
+plot(tree2)
+text(tree2, pretty =0)
+printcp(tree2) # display cp table, complexity parameter
+plotcp(tree2, main="cp values for classification tree") # visualize cross-validation results
+
+# prune the tree
+prune2 = prune(tree2, cp = tree2$cptable[which.min(tree2$cptable[,"xerror"]),"CP"] ) # cp=0.01 here
+plot(prune2)
+text(prune2, pretty =0)
+prp(prune2, faclen = 0, cex = 0.8, extra = 1, main="classification tree structure")
+
+# get prediction of train set
+tree2.pred.train=predict(prune2, census_train, type="class")
+confusionMatrix(tree2.pred.train, census_train[,12])
+
+# accuracy of train set
+trainacc.classification=sum(diag(table(tree2.pred.train, census_train[,12])))/length(tree2.pred.train) 
+trainacc.classification
+
+# get prediction of test set
+tree2.pred=predict(prune2, census_test, type="class")
+tree2.cm=confusionMatrix(tree2.pred,census_test[,12], positive="1")
+tree2.cm
+
+# sensitivity
+tree2.cm$byClass[1] # use event 0 as positive event
+# specificity
+tree2.cm$byClass[2]
+# accuracy of test set
+testacc.classification=tree2.cm$overall[1]
+testacc.classification
+
+# ROC curve
+tree2.predprob = predict(prune2, census_test, type = "prob")[,2] 
+tree2.preds = prediction(tree2.predprob, census_test[,12]) 
+plot(performance(tree2.preds, "tpr", "fpr"), col="red")
+abline(0, 1, lty = 2)
+
+# AUC
+performance(tree2.preds, measure = "auc")@y.values
+
+# important variables plot
+vi = varImp(tree2)
+name = row.names(vi)
+vidf = data.frame("name"=name, "importance"=vi$Overall)
+
+ggplot(vidf, aes(x=reorder(name, importance), y=importance)) + geom_point() + coord_flip() + labs(x="variables", title="Important variables for classification tree")
+```
+
+# Bagged Tree
+```{r}
+require(randomForest)
+bag2 = randomForest(income~., data = census_train, mtry = (ncol(census_train)-1), importance =TRUE) # for bagging, all predictors should be considered for each split of the tree
+
+# best model with maxnodes=48
+bag1 = randomForest(income~., data = census_train, mtry = (ncol(census_train)-1), importance =TRUE, maxnodes=48)
+summary(bag1)
+
+# get prediction of train set
+bag1.pred.train = predict(bag1 ,census_train)
+confusionMatrix(bag1.pred.train, census_train[,12])
+
+# accuracy of train set
+trainacc.bag=sum(diag(table(bag1.pred.train, census_train[,12])))/length(bag1.pred.train) 
+trainacc.bag
+
+# get prediction of test set
+bag1.pred = predict(bag1 ,census_test)
+bag1.cm = confusionMatrix(bag1.pred, census_test[,12], positive="1")
+bag1.cm
+
+# sensitivity
+bag1.cm$byClass[1]
+# specificity
+bag1.cm$byClass[2]
+# accuracy of test set
+testacc.bag=bag1.cm$overall[1]
+testacc.bag
+
+# importance of variables
+importance(bag1)
+varImpPlot(bag1)
+#Mean Decrease Accuracy - How much the model accuracy decreases if we drop that variable.
+#Mean Decrease Gini - Measure of variable importance based on the Gini impurity index used for the calculation of splits in trees. 
+
+# ROC curve
+bag1.predprob = predict(bag1, census_test, type = "prob")[,2] 
+bag1.preds = prediction(bag1.predprob, census_test[,12]) 
+plot(performance(bag1.preds, "tpr", "fpr"), col="red")
+abline(0, 1, lty = 2)
+
+# AUC
+performance(bag1.preds, measure = "auc")@y.values
+
+# tune for maxnodes from 5-60
+set.seed(1)
+folds = createFolds(census_train$income, k = 5) 
+error.bag=c()
+total.error.bag=matrix(NA, nrow = 12, ncol = 10)
+for (i in 1:12) {
+  for (f in 1:length(folds)) {
+    train=census_train[-folds[[f]], ]
+    test=census_train[folds[[f]], ]
+    bag = randomForest(income~., data = census_train, mtry = (ncol(census_train)-1), 
+                       importance  =TRUE,  maxnodes=i*5)
+    pred.bag=predict(rf ,test)
+    error.bag[f]=mean(pred.bag != test[, 12])
+    print(i*5)
+  }
+  total.error.bag[i,]= error.bag
+  print(error.bag)
+ }
+
+total.error.bag
+rowMeans(total.error.bag) # mean CV error
+which.min(rowMeans(total.error.bag))
+plot(x=5*(1:12), y=rowMeans(total.error.bag), type="b", main="CV error for tuning maxnodes", xlab="maxnodes", ylab="CV error")
+
+# tune for maxnodes 48-62
+error.bag50=c()
+total.error.bag50=matrix(NA, nrow = 8, ncol = 10)
+for (i in 1:8) {
+  for (f in 1:length(folds)) {
+    train=census_train[-folds[[f]], ]
+    test=census_train[folds[[f]], ]
+    bag = randomForest(income~., data = census_train, mtry = (ncol(census_train)-1), 
+                       importance =TRUE,  maxnodes=(46+2*i))
+    pred.bag50=predict(rf ,test)
+    error.bag50[f]=mean(pred.bag50 != test[, 12])
+  }
+  total.error.bag50[i,]= error.bag50
+  print(error.bag50)
+}
+
+rowMeans(total.error.bag50) # mean CV error
+which.min(rowMeans(total.error.bag50))
+
+# final combined plot for maxnodes
+plot(x=c(5*(1:9), seq(48, 62, by=2)), y=c(rowMeans(total.error.bag)[1:9],rowMeans(total.error.bag50)), type="o", main="CV error for tuning maxnodes", xlab="maxnodes", ylab="CV error", col="red", pch=19)
+```
+
+
+# Random Forest
+```{r}
+rf1 = randomForest(income~., data = census_train, importance =TRUE, ntree=200)
+
+# see if need to tune ntree
+plot(rf1, main="OOB error vs number of trees")
+legend("top", cex =0.5, legend=c("OOB", "class 0", "class 1"), lty=c(1,2,3), col=c(1,2,3), horiz=T)
+
+# tune mtry1: find CV errors for mtry=3:11
+set.seed(1)
+folds = createFolds(census_train$income, k = 5) 
+error=c()
+total.error=c()
+for (i in 3:11) {
+  for (f in 1:length(folds)) {
+    train=census_train[-folds[[f]], ]
+    test=census_train[folds[[f]], ]
+    rf = randomForest(income~., data = train, importance =TRUE, mtry = i)
+    pred=predict(rf ,test)
+    error[f]=mean(pred != test[, 12])
+  }
+  total.error[i]=mean(error)
+  # print(i)
+ }
+total.error
+which.min(total.error[3:11]) # the min CV error is mtry=3
+plot(x=3:11, y=total.error[3:11], type = "o", main="CV error for tuning mtry", xlab = "mtry", ylab = "CV error", col="red", pch=19)
+
+# tune mtry2: can also use tuneRF() to find optimal mtry
+mtry = tuneRF(census_train[,-12], census_train[,12],  stepFactor=0.5, improve=0.0005, ntreeTry=50) 
+mtry # min OOB error is also mtry=3
+plot(x=c(1,3,6), y=mtry[,2], type="o", main="OOB error from tuneRF() for mtry", xlab = "mtry", ylab = "OOB error", col="red", pch=19)
+best.m = mtry[mtry[, 2] == min(mtry[, 2]), 1]
+best.m # it is the same mtry used in random forest, which is floor(sqrt(# of varibales))=3
+
+# tune mtry3, since it is based on OOB error, so decide to use CV error above
+library(varSelRF)
+rf.vs1 = varSelRF(census_train[, -12], census_train[, 12])
+plot(rf.vs1)
+rf.vs1$best.model.nvars
+rf.vs1$selected.vars
+rf.vs1$selec.history[,c("Number.Variables", "OOB")]
+
+# get prediction of train set
+rf1.pred.train = predict(rf1 ,census_train)
+table(rf1.pred.train, census_train[,12])
+
+# accuracy of train set
+trainacc.rf=sum(diag(table(rf1.pred.train, census_train[,12])))/length(rf1.pred.train)
+trainacc.rf
+
+# get prediction of test set
+rf1.pred = predict(rf1 ,census_test)
+rf1.cm = confusionMatrix(rf1.pred, census_test[,12], positive="1")
+rf1.cm
+
+
+# sensitivity
+rf1.cm$byClass[1]
+# specificity
+rf1.cm$byClass[2]
+# accuracy of test set
+testacc.rf=rf1.cm$overall[1]
+testacc.rf
+
+# importance of variables
+importance(rf1)
+varImpPlot(rf1) # cap.gain, marital.status, edu, occupation, age, hours.per.week
+
+# ROC curve
+rf1.predprob = predict(rf1, census_test, type = "prob")[,2] 
+rf1.preds = prediction(rf1.predprob, census_test[,12]) 
+plot(performance(rf1.preds, "tpr", "fpr"), col="red")
+abline(0, 1, lty = 2)
+
+# AUC
+performance(rf1.preds, measure = "auc")@y.values
+
+# another way to calc CV error and select the best mtry
+# control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+# tunegrid <- expand.grid(.mtry=c(1:11))
+# rf_gridsearch <- train(income~., data = census_train, method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=control)
+# print(rf_gridsearch)
+# plot(rf_gridsearch)
+
+
+```
+
+#### Neural Network
+```{r}
+require(nnet)
+census_train_nn <- nnet(income ~ ., data = census_train, size = 10, maxit = 500)
+census_train_nn_pred <- predict(census_train_nn, newdata = census_test, type = 'raw')
+for (i in 1:nrow(census_train_nn_pred)) {
+  if (census_train_nn_pred[i] >= 0.5) {
+    census_train_nn_pred[i] <- 1
+  } else {
+    census_train_nn_pred[i] <- 0
+  }
+}
+tbl_nn <- table(census_train_nn_pred, census_test$income)
+tbl_nn
+
+sum(diag(tbl_nn)) / nrow(census_train_nn_pred) # accuracy rate for neural network is 84.65%
+```
+
+#### Support Vector Machine(SVM)
+```{r}
+require(kernlab)
+census_train_svm <- ksvm(income ~ ., data = census_train)
+census_train_svm_prod <- predict(census_train_svm, newdata = census_test, type = 'decision')
+census_train_svm_pred <- predict(census_train_svm, newdata = census_test, type = 'response')
+tbl_svm <- table(census_train_svm_pred, census_test$income)
+tbl_svm
+
+sum(diag(tbl_svm)) / length(census_train_svm_pred) # accuracy rate for Support Vector Machine(SVM) is 84.93%
+```
+```{r}
+# NN
+pred_nn <- prediction(census_train_nn_pred, census_test$income)
+predf_nn <- performance(pred_nn, measure = "tpr", x.measure = "fpr")
+dd_nn <- data.frame(FP = predf_nn@x.values[[1]], TP = predf_nn@y.values[[1]])
+
+# SVM
+pred_svm <- prediction(census_train_svm_prod, census_test$income)
+predf_svm <- performance(pred_svm, measure = "tpr", x.measure = "fpr")
+dd_svm <- data.frame(FP = predf_svm@x.values[[1]], TP = predf_svm@y.values[[1]])
+
+# ROC Curve
+g <- ggplot() +
+  geom_line(data = dd_nn, aes(x = FP, y = TP, color = 'Neural Networks')) +
+  geom_line(data = dd_svm, aes(x = FP, y = TP, color = 'Support Vector Machine')) +
+  ggtitle('ROC Curve') +
+  labs(x = 'False Positive Rate (1 - specificity)', y = 'True Positive Rate (sensitivity)')
+
+g + scale_colour_manual(name = 'Classifier', 
+                        values = c('Neural Networks' = 'yellow', 
+                                   'Support Vector Machine' = 'red'))
+
+# AUC
+auc <- rbind(performance(pred_nn, measure = 'auc')@y.values[[1]],
+             performance(pred_svm, measure = 'auc')@y.values[[1]])
+rownames(auc) <- c('Neural Networks', 'Support Vector Machine')
+colnames(auc) <- 'Area Under ROC Curve'
+round(auc, 5)
+```
+
+# Model Selection
+```{r}
+require("reshape2")
+plot(performance(tree2.preds, "tpr", "fpr"), col="red", main="ROC curves of all the classifiers")
+plot(performance(bag1.preds, "tpr", "fpr"), col="blue", add=T)
+plot(performance(rf1.preds, "tpr", "fpr"), col="green", add=T)
+plot(performance(pred_svm, "tpr", "fpr"), col="orange", add=T)
+plot(performance(pred_nn, "tpr", "fpr"), col="purple", add=T)
+abline(0, 1, lty = 2)
+legend(0.6, 0.4, c("Classification tree", "Bagged tree", "Random forest", "Support Vector Machine", "Neural Network"), col = c("red", "blue", "green", "orange", "purple"), lty = c(1,1))
+
+# AUC
+auc <- rbind(performance(tree2.preds, measure = "auc")@y.values,
+             performance(bag1.preds, measure = "auc")@y.values, 
+             performance(rf1.preds, measure = "auc")@y.values, 
+             performance(pred_nn, measure = 'auc')@y.values[[1]],
+             performance(pred_svm, measure = 'auc')@y.values[[1]])
+rownames(auc) <- c('Classification tree', 'Bagged tree', 'Random forest', 'Neural Networks', 'Support Vector Machine')
+colnames(auc) <- 'Area Under ROC Curve'
+round(auc, 5)
+
+Accuracy<-data.frame(Model=c("Classification\ntree", "Bagged\ntree", "Random\nforest", "Support Vector \nMachine", "Neural\nNetwork"),
+                     TrainAccuracy=c(trainacc.classification, trainacc.bag, trainacc.rf, 0, 0 ),
+                     TestAccuracy=c(testacc.classification, testacc.bag, testacc.rf, 0.8493, 0.8465), 
+                     AUC=c(0.8377, 0.8477, 0.8854, 0.8892, 0.7709))
+Accuracy=melt(Accuracy)
+ggplot(Accuracy,aes(x=Model,y=value,fill=variable))+geom_bar(stat ='identity', position = "dodge")+ggtitle('Accuracies of Models') + theme(text = element_text(size = 10, face = "bold"), axis.text.x = element_text(angle = 0, vjust = 0.2)) 
+```
+
