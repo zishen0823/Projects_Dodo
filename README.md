@@ -4,7 +4,7 @@ This projects repo contains the main class projects I have done in UC Berkeley.
 Handwritten_Digits_Recognition   
 •	The goal of this project is to take an image of a handwritten single digit (eg.0,1..9) and determine which digit it is by 
 developing a nearest neighbor classifier. These handwritten digits are in gray-scale and transformed into a big matrix with 
-numbers indicating the darkness of the color. 
+numbers indicating the darkness of the color.     
 • Developed R code to set up a model to identify handwritten digits images through K-Nearest Neighbors and Cross-validation, 
 and the accuracy of prediction was 92.5%.    
 
@@ -12,7 +12,7 @@ Online_Investment_Game
 • Inspired by Buttonwood's article “Picking a fund manager? The odds aren’t great” on the newspaper The Economist, 
 a simple game was built to show the conclusion in the article: it is hard for the market investor to pick a successful fund 
 manager. In this game, real-life funds are simulated and the existence of a better performance fund is assumed. Several strategies 
-for the game players to find the better performance fund were tried, and the results of these strategies were compared and analyzed.
+for the game players to find the better performance fund were tried, and the results of these strategies were compared and analyzed.    
 •	Used JavaScript and HTML to build a website that allows player to invest on 25 funds with different allocations each year 
 for a total 12-year period. The profit gained by the player is compared with the avg. market index to see if the player beat 
 the market by recognizing the good-paying fund.
